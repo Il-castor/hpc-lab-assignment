@@ -52,7 +52,8 @@ static void kernel_durbin(int n,
   DATA_TYPE sum, beta, alpha;
   DATA_TYPE y[2][N];
 #pragma scop
-
+#pragma omp target map(to: r[0:N]) map(from: out[0:N]) map(alloc: y[0:2][0:N]) map(to: i, k)
+  {
   y[0][0] = r[0];
   beta = 1;
   alpha = r[0];
@@ -74,7 +75,7 @@ static void kernel_durbin(int n,
   #pragma omp for
   for (i = 0; i < _PB_N; i++)
     out[i] = y[(_PB_N - 1) % 2][i];
-  
+  }
 }
 
 static long long int hash_array(int n,  DATA_TYPE POLYBENCH_1D(out, N, n))
