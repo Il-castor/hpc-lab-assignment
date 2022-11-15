@@ -14,6 +14,10 @@
 #define NTHREADS 4
 #endif
 
+#ifndef NTHREADS_GPU
+#define NTHREADS_GPU 1024
+#endif
+
 /* Array initialization. */
 static void init_array(int n,
                        DATA_TYPE POLYBENCH_1D(r, N, n))
@@ -51,33 +55,31 @@ static void kernel_durbin(int n,
   int i, k;
   DATA_TYPE sum, beta, alpha;
   DATA_TYPE y[2][N];
+#pragma omp target enter data map(to: r[0:N]) map(alloc: out[0:N], y)
 #pragma scop
-#pragma omp target map(to: r[0:N]) map(from: out[0:N]) map(alloc: y[0:2][0:N]) map(to: i, k)
+#pragma omp target teams num_teams(_PB_N / NTHREADS_GPU)
   {
-  y[0][0] = r[0];
-  beta = 1;
-  alpha = r[0];
-  
-  #pragma omp parallel default(none) firstprivate(i, k, alpha, beta, r, n, out) shared(sum, y) num_threads(NTHREADS)
-  {
+    y[0][0] = r[0];
+    beta = 1;
+    alpha = r[0];
     for (k = 1; k < _PB_N; k++)
     {
       beta = beta - alpha * alpha * beta;
       sum = r[k];
-      #pragma omp for reduction(+:sum)
+      #pragma omp distribute parallel for reduction(+:sum) num_threads(NTHREADS_GPU) dist_schedule(static, NTHREADS_GPU)
       for (i = 0; i <= k - 1; i++)
         sum += r[k - i - 1] * y[(k - 1) % 2][i];
       alpha = -sum * beta;
-      #pragma omp for
+      #pragma omp distribute parallel for num_threads(NTHREADS_GPU) dist_schedule(static, NTHREADS_GPU)
       for (i = 0; i <= k - 1; i++)
         y[k % 2][i] = y[(k - 1) % 2][i] + alpha * y[(k - 1) % 2][k - i - 1];
       y[k % 2][k] = alpha;
     }
-    #pragma omp for
+    #pragma omp distribute parallel for num_threads(NTHREADS_GPU) dist_schedule(static, NTHREADS_GPU)
     for (i = 0; i < _PB_N; i++)
       out[i] = y[(_PB_N - 1) % 2][i];
   }
-  }
+  #pragma omp target exit data map(from: out[0:N]) map(release: r[0:N])
 }
 
 static long long int hash_array(int n,  DATA_TYPE POLYBENCH_1D(out, N, n))

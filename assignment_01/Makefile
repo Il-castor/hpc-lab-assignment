@@ -4,7 +4,7 @@ INCPATHS = -I$(UTIL_DIR)
 FILE ?= durbin_originale
 
 BENCHMARK = $(FILE)
-EXE = $(BENCHMARK)_acc
+EXE = $(BENCHMARK).out
 SRC = $(BENCHMARK).c
 HEADERS = $(BENCHMARK).h
 
@@ -31,10 +31,10 @@ $(EXE) : $(SRC)
 	$(CC) $(CFLAGS) $(INCPATHS) $^ -o $@ $(LDFLAGS)
 
 clean :
-	-rm -vf -vf $(EXE) *~
+	-rm -vf -vf $(EXE) *~ *.out
 
 veryclean : clean
-	-rm -vf $(DEPS)
+	-rm -vf $(DEPS) *.out
 
 run: $(EXE)
 	./$(EXE)
