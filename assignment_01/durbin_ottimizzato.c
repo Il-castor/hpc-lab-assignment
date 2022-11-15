@@ -58,23 +58,24 @@ static void kernel_durbin(int n,
   alpha = r[0];
   
   #pragma omp parallel default(none) firstprivate(i, k, alpha, beta, r, n, out) shared(sum, y) num_threads(NTHREADS)
-  for (k = 1; k < _PB_N; k++)
   {
-    beta = beta - alpha * alpha * beta;
-    sum = r[k];
-    #pragma omp for reduction(+:sum)
-    for (i = 0; i <= k - 1; i++)
-      sum += r[k - i - 1] * y[(k - 1) % 2][i];
-    alpha = -sum * beta;
+    for (k = 1; k < _PB_N; k++)
+    {
+      beta = beta - alpha * alpha * beta;
+      sum = r[k];
+      #pragma omp for reduction(+:sum)
+      for (i = 0; i <= k - 1; i++)
+        sum += r[k - i - 1] * y[(k - 1) % 2][i];
+      alpha = -sum * beta;
+      #pragma omp for
+      for (i = 0; i <= k - 1; i++)
+        y[k % 2][i] = y[(k - 1) % 2][i] + alpha * y[(k - 1) % 2][k - i - 1];
+      y[k % 2][k] = alpha;
+    }
     #pragma omp for
-    for (i = 0; i <= k - 1; i++)
-      y[k % 2][i] = y[(k - 1) % 2][i] + alpha * y[(k - 1) % 2][k - i - 1];
-    y[k % 2][k] = alpha;
+    for (i = 0; i < _PB_N; i++)
+      out[i] = y[(_PB_N - 1) % 2][i];
   }
-  #pragma omp for
-  for (i = 0; i < _PB_N; i++)
-    out[i] = y[(_PB_N - 1) % 2][i];
-  
 }
 
 static long long int hash_array(int n,  DATA_TYPE POLYBENCH_1D(out, N, n))
