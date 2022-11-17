@@ -21,4 +21,7 @@ e dopo
 ```console
 ./compile_gpu.sh
 ```
-
+Per eseguire il Durbin sulla GPU digitare il seguente comando
+```console
+./durbin_gpu.out
+```
