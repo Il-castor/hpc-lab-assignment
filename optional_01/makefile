@@ -1,6 +1,6 @@
 
 DATA ?= data/fvcorr.domn.097K
-FILE ?= euler3d_cpu_offloading.cpp
+FILE ?= euler3d_cpu_offload.cpp
 EXE = ${FILE:.cpp=}
 
 all: ${EXE}
