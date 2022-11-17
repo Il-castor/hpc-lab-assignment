@@ -1,17 +1,13 @@
 UTIL_DIR = polybench
 INCPATHS = -I$(UTIL_DIR)
 
-FILE ?= durbin_originale
+FILE ?= durbin_originale.c
 
-BENCHMARK = $(FILE)
-EXE = $(BENCHMARK).out
-SRC = $(BENCHMARK).c
-HEADERS = $(BENCHMARK).h
+EXE = $(FILE:.c=.out)
+SRC = $(FILE)
+HEADERS = durbin.h
 
 SRC += $(UTIL_DIR)/polybench.c
-
-DEPS        := Makefile.dep
-DEP_FLAG    := -MM
 
 CC=gcc
 LD=ld
@@ -21,7 +17,7 @@ OPT=-O2 -g -fopenmp
 CFLAGS=$(OPT) -I. $(EXT_CFLAGS)
 LDFLAGS=-lm $(EXT_LDFLAGS)
 
-.PHONY: all exe clean veryclean
+.PHONY: all exe clean
 
 all : exe
 
@@ -33,13 +29,5 @@ $(EXE) : $(SRC)
 clean :
 	-rm -vf -vf $(EXE) *~ *.out
 
-veryclean : clean
-	-rm -vf $(DEPS) *.out
-
 run: $(EXE)
 	./$(EXE)
-
-$(DEPS): $(SRC) $(HEADERS)
-	$(CC) $(INCPATHS) $(DEP_FLAG) $(SRC) > $(DEPS)
-
--include $(DEPS)
