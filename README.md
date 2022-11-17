@@ -7,21 +7,22 @@
 
 
 ## Eseguire il codice 
-Entrare nella cartella assignment_01 e digitare il seguente comando per compilare le varie versioni di durbin sulla CPU: 
+Entrare nella cartella `assignment_01` e digitare il seguente comando per compilare le varie versioni di durbin sulla CPU: 
 
 ```console
 make FILE=nome_file.c EXT_CFLAGS="-DPOLYBENCH_TIME -DLARGE_DATASET -DPRINT_HASH" clean run
 ```
 Per compilare durbin sulla GPU digitare i seguenti comandi:
 
-```console
+```bash
 module load clang/11.0.0 cuda/10.0
-```
-e dopo
-```console
 ./compile_gpu.sh
-```
-Per eseguire il Durbin sulla GPU digitare il seguente comando
-```console
 ./durbin_gpu.out
+```
+
+## Assignment opzionale
+Il codice opzionale si può trovare nella cartella `optional_01`, per eseguire il codice si può digitare il comando:
+
+```console
+make FILE=nome_file.c clean run
 ```
