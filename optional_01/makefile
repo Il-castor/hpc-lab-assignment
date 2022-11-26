@@ -20,24 +20,20 @@ LDFLAGS := -lm -lcudart $(EXT_LDFLAGS)
 NVCFLAGS:=$(CXXFLAGS) $(NVOPT)
 NVLDFLAGS:=$(LDFLAGS) -lgomp
 
-BUILD_DIR ?= ./build
-
-SRCS := ${FILE}
-OBJS := $(SRCS:%=$(BUILD_DIR)/%.o) $(EXERCISE:%=$(BUILD_DIR)/%.o)
+ifeq ($(FILENAME), euler3d_cpu_offload)
+CXX=clang++
+CXXOFLAGS := -fopenmp=libomp -fopenmp-targets=nvptx64-nvidia-cuda
+endif
 
 all: ${EXE}
 
-$(EXE): $(OBJS)
-	$(MKDIR_P) $(dir $@)
-	$(NVCC) $(NVCFLAGS) $(OBJS) -o $@ $(NVLDFLAGS)
-
-$(BUILD_DIR)/%.cu.o: %.cu
-	$(MKDIR_P) $(dir $@)
-	$(NVCC) $(NVCFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/%.cpp.o: %.cpp
-	$(MKDIR_P) $(dir $@)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+ifeq ($(suffix $(FILE)), .cu)
+$(EXE): ${FILENAME}.cu
+	$(NVCC) $(NVCFLAGS) $< -o ${EXE}
+else
+$(EXE): ${FILENAME}.cpp
+	$(CXX) $(CXXFLAGS) $(CXXOFLAGS) $< -o ${EXE}
+endif
 
 profile:
 	sudo LD_LIBRARY_PATH=/usr/local/cuda/lib:/usr/ext/lib:${LD_LIBRARY_PATH} LIBRARY_PATH=/usr/ext/lib:${LIBRARY_PATH} /usr/local/cuda-10.0/bin/nvprof ./${EXE} ${DATA}
@@ -46,7 +42,8 @@ run: ${EXE}
 	./${EXE} ${DATA}
 
 clean:
-	rm -rf euler3d_cpu_original euler3d_cpu_parallel euler3d_cpu_offloading ${EXE}
+	rm -rf build/*
+	rm -rf euler3d_cpu_original euler3d_cpu_parallel euler3d_cpu_offloading euler3d_cuda ${EXE}
 	rm -rf density density_energy momentum
 
 .PHONY: all profile run clean

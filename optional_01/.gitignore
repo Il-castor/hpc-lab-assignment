@@ -4,3 +4,4 @@ momentum
 euler3d_cpu_original
 euler3d_cpu_parallel
 euler3d_cpu_offload
+euler3d_cuda
