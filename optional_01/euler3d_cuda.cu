@@ -6,13 +6,8 @@
 #include <cmath>
 #include <omp.h>
 
-struct float3
-{
-	float x, y, z;
-};
-
 #ifndef block_length
-#define block_length 1
+#define block_length 32
 #endif
 
 /*
@@ -45,8 +40,23 @@ struct float3
 
 
 #ifndef BLOCK_SIZE
-#define BLOCK_SIZE (1024)
+#define BLOCK_SIZE (32)
 #endif
+
+#include <cuda_runtime.h>
+#define gpuErrchk(ans)                        \
+    {                                         \
+        gpuAssert((ans), __FILE__, __LINE__); \
+    }
+static inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort = true)
+{
+    if (code != cudaSuccess)
+    {
+        fprintf(stderr, "GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+        if (abort)
+            exit(code);
+    }
+}
 
 /*
  * Generic functions
@@ -102,32 +112,33 @@ void dump(float *variables, int nel, int nelr)
 
 /*Creazione costanti che utilizza cuda per fare i diversi calcoli*/
 __constant__ float ff_variable[NVAR];
-__constant__ float3 ff_flux_contribution_momentum_x[1];
-__constant__ float3 ff_flux_contribution_momentum_y[1];
-__constant__ float3 ff_flux_contribution_momentum_z[1];
-__constant__ float3 ff_flux_contribution_density_energy[1];
+__constant__ float3 ff_flux_contribution_momentum_x;
+__constant__ float3 ff_flux_contribution_momentum_y;
+__constant__ float3 ff_flux_contribution_momentum_z;
+__constant__ float3 ff_flux_contribution_density_energy;
 
 
-//funzione per inizializzare le variabili 
+//funzione per inizializzare le variabili
 __global__ void cuda_initialize_variables(int nelr, float* variables)
 {
-	/* Original code of this function 
+	/* Original code of this function
 	for (int i = 0; i < nelr; i++)
 	{
 		for (int j = 0; j < NVAR; j++)
 			variables[i + j * nelr] = ff_variable[j];
 	}
 	*/
-	int i = blockDim.x * blockIdx.x + threadIdx.x; 
+	int i = blockDim.x * blockIdx.x + threadIdx.x;
 	for (int j = 0; j < NVAR; j++)
 		variables[i + j * nelr] = ff_variable[j];
 }
 
 void initialize_variables(int nelr, float *variables)
 {
-	dim3 dimGrid(nelr / BLOCK_SIZE)    dimBlock(BLOCK_SIZE); 
-	cuda_initialize_variables<<<dimGrid, dimBlock>>>(nelr, variables, ff_variable);
-	
+	dim3 dimGrid(nelr / BLOCK_SIZE),    dimBlock(BLOCK_SIZE);
+	cuda_initialize_variables<<<dimGrid, dimBlock>>>(nelr, variables);
+	gpuErrchk(cudaPeekAtLastError());
+
 }
 // questa funzione è eseguita sull'host ed è chiamata sia dal device che dall'host
 __device__ __host__ inline void compute_flux_contribution(float &density, float3 &momentum, float &density_energy, float &pressure, float3 &velocity, float3 &fc_momentum_x, float3 &fc_momentum_y, float3 &fc_momentum_z, float3 &fc_density_energy)
@@ -207,7 +218,7 @@ __global__ void compute_step_factor(int nelr, float *__restrict variables, float
  *
  */
 //funzione eseguita dal device e chiamabile solo dall'host
-__global__ void compute_flux(int nelr, int *elements_surrounding_elements, float *normals, float *variables, float *fluxes, float *ff_variable, float3 ff_flux_contribution_momentum_x, float3 ff_flux_contribution_momentum_y, float3 ff_flux_contribution_momentum_z, float3 ff_flux_contribution_density_energy)
+__global__ void compute_flux(int nelr, int *elements_surrounding_elements, float *normals, float *variables, float *fluxes)
 {
 	const float smoothing_coefficient = float(0.2f);
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
@@ -377,7 +388,7 @@ int main(int argc, char **argv)
 	const char *data_file_name = argv[1];
 
 	float h_ff_variable[NVAR];
-	//float3 ff_flux_contribution_momentum_x, ff_flux_contribution_momentum_y, ff_flux_contribution_momentum_z, ff_flux_contribution_density_energy;
+	float3 h_ff_flux_contribution_momentum_x, h_ff_flux_contribution_momentum_y, h_ff_flux_contribution_momentum_z, h_ff_flux_contribution_density_energy;
 
 	// set far field conditions
 	{
@@ -408,12 +419,12 @@ int main(int argc, char **argv)
 
 		//alloco memoria per la GPU
 		// copy far field conditions to the gpu
-		cudaMemcpyToSymbol(ff_variable,          h_ff_variable,          NVAR*sizeof(float));
-		cudaMemcpyToSymbol(ff_flux_contribution_momentum_x, &h_ff_flux_contribution_momentum_x, sizeof(float3));
-		cudaMemcpyToSymbol(ff_flux_contribution_momentum_y, &h_ff_flux_contribution_momentum_y, sizeof(float3));
-		cudaMemcpyToSymbol(ff_flux_contribution_momentum_z, &h_ff_flux_contribution_momentum_z, sizeof(float3));
-		
-		cudaMemcpyToSymbol(ff_flux_contribution_density_energy, &h_ff_flux_contribution_density_energy, sizeof(float3));	
+		gpuErrchk(cudaMemcpyToSymbol(ff_variable,          h_ff_variable,          NVAR*sizeof(float)));
+		gpuErrchk(cudaMemcpyToSymbol(ff_flux_contribution_momentum_x, &h_ff_flux_contribution_momentum_x, sizeof(float3)));
+		gpuErrchk(cudaMemcpyToSymbol(ff_flux_contribution_momentum_y, &h_ff_flux_contribution_momentum_y, sizeof(float3)));
+		gpuErrchk(cudaMemcpyToSymbol(ff_flux_contribution_momentum_z, &h_ff_flux_contribution_momentum_z, sizeof(float3)));
+
+		gpuErrchk(cudaMemcpyToSymbol(ff_flux_contribution_density_energy, &h_ff_flux_contribution_density_energy, sizeof(float3)));
 
 	}
 	int nel;
@@ -470,17 +481,27 @@ int main(int argc, char **argv)
 	// Create arrays and set initial conditions
 	float *variables = alloc<float>(nelr * NVAR);
 	float *d_variables;
-	cudaMalloc((void **)&d_variables, sizeof(float) * nelr * NVAR);
-	initialize_variables(nelr, d_variables, ff_variable);
+	gpuErrchk(cudaMalloc((void **)&d_variables, sizeof(float) * nelr * NVAR));
+	initialize_variables(nelr, d_variables);
 
 	float *d_old_variables;
-	cudaMalloc((void **)&d_old_variables, sizeof(float) * nelr * NVAR);
+	gpuErrchk(cudaMalloc((void **)&d_old_variables, sizeof(float) * nelr * NVAR));
 	float *d_fluxes;
-	cudaMalloc((void **)&d_fluxes, sizeof(float) * nelr * NVAR);
+	gpuErrchk(cudaMalloc((void **)&d_fluxes, sizeof(float) * nelr * NVAR));
 	float *d_step_factors;
-	cudaMalloc((void **)&d_step_factors, sizeof(float) * nelr);
+	gpuErrchk(cudaMalloc((void **)&d_step_factors, sizeof(float) * nelr));
 
-	//Chiamo il kernel per inizializzare le variabili 
+
+	float *d_areas, *d_normals;
+	int *d_elements_surrounding_elements;
+	gpuErrchk(cudaMalloc((void **)&d_areas, sizeof(float)*nelr));
+	gpuErrchk(cudaMalloc((void **)&d_elements_surrounding_elements, sizeof(int)*nelr*NNB));
+	gpuErrchk(cudaMalloc((void **)&d_normals, sizeof(float)*NDIM * NNB * nelr));
+	gpuErrchk(cudaMemcpy(d_areas, areas, sizeof(float)*nelr, cudaMemcpyHostToDevice));
+	gpuErrchk(cudaMemcpy(d_elements_surrounding_elements, elements_surrounding_elements, sizeof(float)*nelr*NNB, cudaMemcpyHostToDevice));
+	gpuErrchk(cudaMemcpy(d_normals, normals, sizeof(float)*NDIM * NNB * nelr, cudaMemcpyHostToDevice));
+
+	//Chiamo il kernel per inizializzare le variabili
 	//initialize_variables(nelr, old_variables, ff_variable);
 	//initialize_variables(nelr, fluxes, ff_variable);
 
@@ -488,27 +509,33 @@ int main(int argc, char **argv)
 	std::cout << "Starting..." << std::endl;
 
 	// Begin iterations
-	for (int i = 0; i < iterations; i++)
+	for (int i = 0; i < 2000; i++)
 	{
 		std::cout << i << "/" << iterations << std::endl;
 		{
-		cudaMemcpy(d_old_variables, d_variables, sizeof(float) * nelr * NVAR, cudaMemcpyDeviceToDevice);
-	
+		gpuErrchk(cudaMemcpy(d_old_variables, d_variables, sizeof(float) * nelr * NVAR, cudaMemcpyDeviceToDevice));
+
 
 		// for the first iteration we compute the time step
 		//compute_step_factor(nelr, variables, areas, step_factors);
 		//dim3 gridDim(nelr / BLOCK_SIZE, nelr/BLOCK_SIZE), blockDim(BLOCK_SIZE, BLOCK_SIZE);
-		compute_step_factor<<<nelr / BLOCK_SIZE, BLOCK_SIZE>>>(nelr, d_variables, areas, d_step_factors);
+		int blockDim = (nelr + BLOCK_SIZE - 1) / BLOCK_SIZE;
+		compute_step_factor<<<blockDim, BLOCK_SIZE>>>(nelr, d_variables, d_areas, d_step_factors);
+		gpuErrchk(cudaPeekAtLastError());
 
 		for (int j = 0; j < RK; j++)
 		{
 			//compute_flux(nelr, elements_surrounding_elements, normals, variables, fluxes, ff_variable, ff_flux_contribution_momentum_x, ff_flux_contribution_momentum_y, ff_flux_contribution_momentum_z, ff_flux_contribution_density_energy);
-			compute_flux<<<nelr/BLOCK_SIZE, BLOCK_SIZE>>>(nelr, elements_surrounding_elements, normals, d_variables, d_fluxes, h_ff_variable, ff_flux_contribution_momentum_x, ff_flux_contribution_momentum_y, ff_flux_contribution_momentum_z, ff_flux_contribution_density_energy);
+			compute_flux<<<blockDim, BLOCK_SIZE>>>(nelr, d_elements_surrounding_elements, d_normals, d_variables, d_fluxes);
+			gpuErrchk(cudaPeekAtLastError());
 			//time_step(j, nelr, old_variables, variables, step_factors, fluxes);
-			time_step<<<nelr / BLOCK_SIZE, BLOCK_SIZE>>>(j, nelr, old_variables, variables, step_factors, fluxes);
+			time_step<<<blockDim, BLOCK_SIZE>>>(j, nelr, d_old_variables, d_variables, d_step_factors, d_fluxes);
+			gpuErrchk(cudaPeekAtLastError());
 		}
 		}
 	}
+
+	gpuErrchk(cudaMemcpy(variables, d_variables, sizeof(float) * nelr * NVAR, cudaMemcpyDeviceToHost));
 
 	std::cout << "Saving solution..." << std::endl;
 	dump(variables, nel, nelr);
@@ -520,12 +547,16 @@ int main(int argc, char **argv)
 	dealloc<float>(normals);
 
 	dealloc<float>(variables);
-	dealloc<float>(old_variables);
-	dealloc<float>(fluxes);
-	dealloc<float>(step_factors);
+
+	cudaFree(d_variables);
+	cudaFree(d_old_variables);
+	cudaFree(d_step_factors);
+	cudaFree(d_fluxes);
+	cudaFree(d_areas);
+	cudaFree(d_elements_surrounding_elements);
+	cudaFree(d_normals);
 
 	std::cout << "Done..." << std::endl;
 
 	return 0;
-	porca
 }
