@@ -35,7 +35,7 @@ $(EXE): ${FILENAME}.cpp
 	$(CXX) $(CXXFLAGS) $(CXXOFLAGS) $< -o ${EXE}
 endif
 
-profile:
+profile: ${EXE}
 	sudo LD_LIBRARY_PATH=/usr/local/cuda/lib:/usr/ext/lib:${LD_LIBRARY_PATH} LIBRARY_PATH=/usr/ext/lib:${LIBRARY_PATH} /usr/local/cuda-10.0/bin/nvprof ./${EXE} ${DATA}
 
 run: ${EXE}
