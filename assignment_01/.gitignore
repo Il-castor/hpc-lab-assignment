@@ -1,1 +1,6 @@
 *.out
+build
+durbin_cuda
+durbin_gpu
+durbin_originale
+durbin_parallelizzato

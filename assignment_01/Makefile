@@ -1,33 +1,54 @@
-UTIL_DIR = polybench
-INCPATHS = -I$(UTIL_DIR)
+ifndef CUDA_HOME
+CUDA_HOME:=/usr/local/cuda
+endif
 
 FILE ?= durbin_originale.c
 
-EXE = $(FILE:.c=.out)
-SRC = $(FILE)
-HEADERS = durbin.h
+BUILD_DIR ?= ./build
 
-SRC += $(UTIL_DIR)/polybench.c
+NVCC=$(CUDA_HOME)/bin/nvcc
+CXX=gcc
 
-CC=gcc
-LD=ld
-OBJDUMP=objdump
+OPT:=-O2 -g
+NVOPT:=-Xcompiler -fopenmp -lineinfo -arch=sm_53 --ptxas-options=-v --use_fast_math
 
-OPT=-O2 -g -fopenmp
-CFLAGS=$(OPT) -I. $(EXT_CFLAGS)
-LDFLAGS=-lm $(EXT_LDFLAGS)
+CXXFLAGS:=$(OPT) -I. -Ipolybench $(EXT_CXXFLAGS)
+LDFLAGS:=-lm -lcudart $(EXT_LDFLAGS)
 
-.PHONY: all exe clean
+NVCFLAGS:=$(CXXFLAGS) $(NVOPT)
+NVLDFLAGS:=$(LDFLAGS) -lgomp
 
-all : exe
+SRCS:= polybench/polybench.c
+OBJS := $(SRCS:%=$(BUILD_DIR)/%.o) $(FILE:%=$(BUILD_DIR)/%.o)
+EXE=$(basename $(FILE))
 
-exe : $(EXE)
+$(EXE):	$(OBJS)
+	$(MKDIR_P) $(dir $@)
+	$(NVCC) $(NVCFLAGS) $(OBJS) -o $@ $(NVLDFLAGS)
 
-$(EXE) : $(SRC)
-	$(CC) $(CFLAGS) $(INCPATHS) $^ -o $@ $(LDFLAGS)
+$(BUILD_DIR)/%.cu.o: %.cu
+	$(MKDIR_P) $(dir $@)
+	$(NVCC) $(NVCFLAGS) -c $< -o $@
 
-clean :
-	-rm -vf -vf $(EXE) *~ *.out
+$(BUILD_DIR)/%.cpp.o: %.cpp
+	$(MKDIR_P) $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/%.c.o: %.c
+	$(MKDIR_P) $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+all: $(EXE)
+
+.PHONY: run profile clean
 run: $(EXE)
 	./$(EXE)
+
+profile: $(EXE)
+	sudo LD_LIBRARY_PATH=$(CUDA_HOME)/lib:/usr/ext/lib:${LD_LIBRARY_PATH} LIBRARY_PATH=/usr/ext/lib:${LIBRARY_PATH} nvprof ./$(EXE)
+
+clean:
+	echo HELLO $(EXE)
+	-rm -fr $(BUILD_DIR) *.exe *.out *~
+
+MKDIR_P ?= mkdir -p
