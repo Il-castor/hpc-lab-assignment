@@ -13,7 +13,9 @@
 #ifndef NTHREADS
 #define NTHREADS 4
 #endif
-#define BLOCK_SIZE (32)
+#define BLOCK_SIZE (64)
+
+#define SUM_BLOCK_COUNT (4)
 
 #include <cuda_runtime.h>
 #define gpuErrchk(ans)                        \
@@ -78,6 +80,7 @@ static void kernel_durbin(int n,
 
   for (k = 1; k < _PB_N; k++)
   {
+
     beta = beta - alpha * alpha * beta;
 
     sum = 0;
@@ -105,11 +108,7 @@ static void kernel_durbin(int n,
 
 }
 
-__global__ static void durbin_k1(int k, DATA_TYPE *r, DATA_TYPE *y, DATA_TYPE  *tmp) {
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i < k)
-    tmp[i] = r[k - i - 1] * y[i];
-}
+__device__ DATA_TYPE d_alpha, d_beta;
 
 /*
  * Applies a sum reduction on an entire warp, the result will be saved in sdata[0]
@@ -127,27 +126,54 @@ __device__ void warpReduce(volatile DATA_TYPE *sdata, unsigned int tid) {
 /*
  * every block applies a sum reduction and stores the result in g_odata
  */
-__global__ static void blockReduce(DATA_TYPE *g_idata, DATA_TYPE *g_odata, unsigned int n) {
+__global__ static void durbin_k1(unsigned int k, DATA_TYPE *r, DATA_TYPE *y, DATA_TYPE *g_odata) {
   __shared__ DATA_TYPE sdata[BLOCK_SIZE*2];
   unsigned int tid = threadIdx.x;
   unsigned int i = blockIdx.x*(BLOCK_SIZE*2) + tid;
-  unsigned int gridSize = BLOCK_SIZE*2*gridDim.x;
-  sdata[tid] = 0;
-  while (i < n) { sdata[tid] += g_idata[i] + g_idata[i+BLOCK_SIZE]; i += gridSize; }
+  unsigned int gridSize = BLOCK_SIZE*gridDim.x;
+
+  unsigned int workPerThread = (k + gridSize - 1) / gridSize;
+
+  d_beta = d_beta - d_alpha * d_alpha * d_beta;
+
+  DATA_TYPE sum = 0;
+  while(workPerThread-- != 0) {
+    if (i < k) sum += r[k - i - 1] * y[i];
+    i += gridSize;
+  }
+  sdata[tid] = sum;
   __syncthreads();
   if (BLOCK_SIZE >= 512) { if (tid < 256) { sdata[tid] += sdata[tid + 256]; } __syncthreads(); }
   if (BLOCK_SIZE >= 256) { if (tid < 128) { sdata[tid] += sdata[tid + 128]; } __syncthreads(); }
   if (BLOCK_SIZE >= 128) { if (tid < 64 ) { sdata[tid] += sdata[tid + 64];  } __syncthreads(); }
   if (tid < 32) warpReduce(sdata, tid);
+
   if (tid == 0) g_odata[blockIdx.x] = sdata[0];
 }
 
-__global__ static void durbin_k2(int k, DATA_TYPE *r, DATA_TYPE *yi, DATA_TYPE *yo, DATA_TYPE alpha) {
+
+__global__ static void durbin_k2(int k, DATA_TYPE *part_sum, DATA_TYPE *r, DATA_TYPE *yi, DATA_TYPE *yo) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
+  int tid = threadIdx.x;
+
+  __shared__ DATA_TYPE psum[SUM_BLOCK_COUNT];
+  if (tid < SUM_BLOCK_COUNT) psum[tid] = part_sum[tid];
+  __syncthreads();
+  if (i == k) {
+    DATA_TYPE sum = 0.0;;
+    for (int j = 0; j < SUM_BLOCK_COUNT; j++) sum += psum[j];
+
+    sum += r[k];
+
+    d_alpha = -sum * d_beta;
+  }
+  __syncthreads();
+
+  DATA_TYPE a = d_alpha;
   if (i < k)
-    yo[i] = yi[i] + alpha * yi[k - i - 1];
+    yo[i] = yi[i] + a * yi[k - i - 1];
   if (i == k)
-    yo[k] = alpha;
+    yo[k] = a;
 }
 
 static long long int hash_array(int n,  DATA_TYPE *out)
@@ -160,25 +186,6 @@ static long long int hash_array(int n,  DATA_TYPE *out)
         hash = hash * 37 + *reinterpret_cast<long long int *>(&out[i]);
     }
     return hash;
-}
-
-DATA_TYPE reduceCuda(DATA_TYPE *in, DATA_TYPE *tmp, int n) {
-  // n -> ceil(n / BLOCK_SIZE) (repeat until we are 1)
-  //printf("reduceCuda(%p, %p, %i)\n", (void *) in, (void *) tmp, n);
-
-  while (n != 1) {
-    int dimBlock = BLOCK_SIZE;
-    int dimGrid = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    // Divides "in" in block (by cuda), for every block, reduces it to only 1 number that writes in "out"
-    blockReduce<<<dimGrid, dimBlock>>>(in, tmp, n);
-    gpuErrchk(cudaPeekAtLastError());
-    // Since every block writes only 1 element in "out", now we have "dimGrid" elements to reduce
-    std::swap(in, tmp);
-    n = dimGrid;
-  }
-  DATA_TYPE out = 0.0;
-  gpuErrchk(cudaMemcpy(&out, in, sizeof(DATA_TYPE), cudaMemcpyDeviceToHost));
-  return out;
 }
 
 
@@ -208,45 +215,36 @@ int main(int argc, char **argv)
   int dimBlock = BLOCK_SIZE;
   int dimGrid = (n + 1 + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-  DATA_TYPE *r, *out, *ycurr, *ynext, *red1, *red2;
+  DATA_TYPE *r, *out, *ycurr, *ynext, *part_sum;
   gpuErrchk(cudaMalloc((void **)&r, N * sizeof(DATA_TYPE)));
   gpuErrchk(cudaMalloc((void **)&out, N * sizeof(DATA_TYPE)));
   gpuErrchk(cudaMalloc((void **)&ycurr, N * sizeof(DATA_TYPE)));
   gpuErrchk(cudaMalloc((void **)&ynext, N * sizeof(DATA_TYPE)));
-  gpuErrchk(cudaMalloc((void **)&red1, N * sizeof(DATA_TYPE)));
-  gpuErrchk(cudaMalloc((void **)&red2, N * sizeof(DATA_TYPE)));
+  gpuErrchk(cudaMalloc((void **)&part_sum, SUM_BLOCK_COUNT * sizeof(DATA_TYPE)));
 
 
   auto begin2 = std::chrono::high_resolution_clock::now();
 
   init_array<<<dimGrid, dimBlock>>>(n, r);
 
-
   DATA_TYPE beta = 1;
   DATA_TYPE alpha = 0;
   gpuErrchk(cudaMemcpy(ycurr, r, sizeof(DATA_TYPE), cudaMemcpyDeviceToDevice));
   gpuErrchk(cudaMemcpy(&alpha, r, sizeof(DATA_TYPE), cudaMemcpyDeviceToHost));
 
+  cudaMemcpyToSymbol(d_alpha, &alpha, sizeof(DATA_TYPE));
+  cudaMemcpyToSymbol(d_beta, &beta, sizeof(DATA_TYPE));
   for (unsigned int k = 1; k < _PB_N; k++)
   {
-    beta = beta - alpha * alpha * beta;
-
-    durbin_k1<<<dimGrid, dimBlock>>>(k, r, ycurr, red1);
+    durbin_k1<<<SUM_BLOCK_COUNT, dimBlock>>>(k, r, ycurr, part_sum);
     gpuErrchk(cudaPeekAtLastError());
-    DATA_TYPE sum = reduceCuda(red1, red2, k);
-
-    DATA_TYPE rk;
-    gpuErrchk(cudaMemcpy(&rk, &r[k], sizeof(DATA_TYPE), cudaMemcpyDeviceToHost));
-    sum += rk;
-    alpha = -sum * beta;
-
-    durbin_k2<<<dimGrid, dimBlock>>>(k, r, ycurr, ynext, alpha);
+    int dimGrid2 = (k + 1 + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    durbin_k2<<<dimGrid2, dimBlock>>>(k, part_sum, r, ycurr, ynext);
     gpuErrchk(cudaPeekAtLastError());
     std::swap(ycurr, ynext);
   }
 
   gpuErrchk(cudaMemcpy(h_out2, ycurr, sizeof(DATA_TYPE) * n, cudaMemcpyDeviceToHost));
-
 
   auto end2 = std::chrono::high_resolution_clock::now();
   std::cout << std::chrono::duration_cast<std::chrono::milliseconds>(end2-begin2).count() << "s" << std::endl;
@@ -255,8 +253,7 @@ int main(int argc, char **argv)
   gpuErrchk(cudaFree(out));
   gpuErrchk(cudaFree(ycurr));
   gpuErrchk(cudaFree(ynext));
-  gpuErrchk(cudaFree(red1));
-  gpuErrchk(cudaFree(red2));
+  gpuErrchk(cudaFree(part_sum));
 
   if (argc > 42 && ! strcmp(argv[0], "")) print_array(n, h_out2);
 #ifdef PRINT_HASH
@@ -271,6 +268,7 @@ int main(int argc, char **argv)
   for (int i = 0; i < n; i++) {
     double d = h_out[i] - h_out2[i];
     diff += d*d;
+    if (h_out[i] != h_out2[i])
     std::cout << "INDEX " << i << " " <<  h_out[i] << " " <<  h_out2[i] << " diff:" << (h_out2[i] - h_out[i]) << std::endl;
   }
   std::cout << "NORM DIFFERENCE: " << diff << std::endl;
