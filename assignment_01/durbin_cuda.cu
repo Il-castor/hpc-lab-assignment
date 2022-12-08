@@ -13,7 +13,8 @@
 #ifndef NTHREADS
 #define NTHREADS 4
 #endif
-#define BLOCK_SIZE (64)
+#define BLOCK_SIZE (128)
+#define WARP_SIZE (32)
 
 #define SUM_BLOCK_COUNT (4)
 
@@ -40,14 +41,6 @@ static void host_init_array(int n, DATA_TYPE *r)
   {
     r[i] = (i + 1) / n / 4.0;
   }
-}
-
-/* Array initialization. */
-__global__ static void init_array(int n, DATA_TYPE* r) {
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
-
-  if (i < n)
-    r[i] = (i + 1) / n / 4.0;
 }
 
 /* DCE code. Must scan the entire live-out data.
@@ -114,66 +107,75 @@ __device__ DATA_TYPE d_alpha, d_beta;
  * Applies a sum reduction on an entire warp, the result will be saved in sdata[0]
  * (the others will contain invalid data)
  */
-__device__ void warpReduce(volatile DATA_TYPE *sdata, unsigned int tid) {
-  if (BLOCK_SIZE >= 64) sdata[tid] += sdata[tid + 32];
-  if (BLOCK_SIZE >= 32) sdata[tid] += sdata[tid + 16];
-  if (BLOCK_SIZE >= 16) sdata[tid] += sdata[tid + 8];
-  if (BLOCK_SIZE >= 8) sdata[tid] += sdata[tid + 4];
-  if (BLOCK_SIZE >= 4) sdata[tid] += sdata[tid + 2];
-  if (BLOCK_SIZE >= 2) sdata[tid] += sdata[tid + 1];
+template<int BSIZE = WARP_SIZE>
+__device__ __inline__ double warpReduce(double val) {
+  const unsigned int MASK = (((long long int) 1) << BSIZE) - 1;
+  if (BSIZE >= 32) val += __shfl_down_sync(MASK, val, 16);
+  if (BSIZE >= 16) val += __shfl_down_sync(MASK, val, 8);
+  if (BSIZE >=  8) val += __shfl_down_sync(MASK, val, 4);
+  if (BSIZE >=  4) val += __shfl_down_sync(MASK, val, 2);
+  if (BSIZE >=  2) val += __shfl_down_sync(MASK, val, 1);
+  return val;
 }
 
 /*
  * every block applies a sum reduction and stores the result in g_odata
  */
-__global__ static void durbin_k1(unsigned int k, DATA_TYPE *r, DATA_TYPE *y, DATA_TYPE *g_odata) {
-  __shared__ DATA_TYPE sdata[BLOCK_SIZE*2];
-  unsigned int tid = threadIdx.x;
-  unsigned int i = blockIdx.x*(BLOCK_SIZE*2) + tid;
-  unsigned int gridSize = BLOCK_SIZE*gridDim.x;
+__global__ static void durbin_k1(unsigned int k, DATA_TYPE * __restrict__ r, DATA_TYPE * __restrict__ y, DATA_TYPE * __restrict__ g_odata) {
+  const unsigned int PARTSUM_SIZE = (BLOCK_SIZE + WARP_SIZE - 1) / WARP_SIZE; // ceil(BLOCK_SIZE / WARP_SIZE)
+  __shared__ DATA_TYPE sdata[PARTSUM_SIZE];
+  const unsigned int tid = threadIdx.x;
+  const unsigned int gridSize = BLOCK_SIZE*SUM_BLOCK_COUNT;
+  const unsigned int workPerThread = (k + gridSize - 1) / gridSize;
 
-  unsigned int workPerThread = (k + gridSize - 1) / gridSize;
+  unsigned int i = blockIdx.x*BLOCK_SIZE + tid;
 
   d_beta = d_beta - d_alpha * d_alpha * d_beta;
 
   DATA_TYPE sum = 0;
-  while(workPerThread-- != 0) {
+  for(int j = 0; j < workPerThread; j++) {
     if (i < k) sum += r[k - i - 1] * y[i];
     i += gridSize;
   }
-  sdata[tid] = sum;
+  sum = warpReduce(sum);
+  if (tid % WARP_SIZE == 0) sdata[tid / WARP_SIZE] = sum;
   __syncthreads();
-  if (BLOCK_SIZE >= 512) { if (tid < 256) { sdata[tid] += sdata[tid + 256]; } __syncthreads(); }
-  if (BLOCK_SIZE >= 256) { if (tid < 128) { sdata[tid] += sdata[tid + 128]; } __syncthreads(); }
-  if (BLOCK_SIZE >= 128) { if (tid < 64 ) { sdata[tid] += sdata[tid + 64];  } __syncthreads(); }
-  if (tid < 32) warpReduce(sdata, tid);
-
-  if (tid == 0) g_odata[blockIdx.x] = sdata[0];
+  if (tid < PARTSUM_SIZE) {
+    sum = warpReduce<PARTSUM_SIZE>(sdata[tid]);
+    if (tid == 0) g_odata[blockIdx.x] = sum;
+  }
 }
 
 
-__global__ static void durbin_k2(int k, DATA_TYPE *part_sum, DATA_TYPE *r, DATA_TYPE *yi, DATA_TYPE *yo) {
+__global__ static void durbin_k2(int k, DATA_TYPE * __restrict__ part_sum, DATA_TYPE * __restrict__ r, DATA_TYPE * __restrict__ yi, DATA_TYPE * __restrict__ yo) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   int tid = threadIdx.x;
 
-  __shared__ DATA_TYPE psum[SUM_BLOCK_COUNT];
-  if (tid < SUM_BLOCK_COUNT) psum[tid] = part_sum[tid];
-  __syncthreads();
-  if (i == k) {
-    DATA_TYPE sum = 0.0;;
-    for (int j = 0; j < SUM_BLOCK_COUNT; j++) sum += psum[j];
+  static_assert(SUM_BLOCK_COUNT <= WARP_SIZE);
+  if (tid < SUM_BLOCK_COUNT) {
+    // No sync because every fetch is in the same warp
+    DATA_TYPE psum = part_sum[tid];
+    // Only works because SUM_BLOCK_COUNT <= WARP_SIZE (i.e. we're in the same warp)
+    psum = warpReduce<SUM_BLOCK_COUNT>(psum);
+    psum += r[k];
 
-    sum += r[k];
-
-    d_alpha = -sum * d_beta;
+    if (tid == 0) {
+      d_alpha = -psum * d_beta;
+    }
   }
   __syncthreads();
 
   DATA_TYPE a = d_alpha;
-  if (i < k)
-    yo[i] = yi[i] + a * yi[k - i - 1];
-  if (i == k)
-    yo[k] = a;
+  if (i < k) {
+    // You can prove that 0 <= j < k
+    // Compute y[i] and y[j] at the same time!
+    int j = k - i - 1;
+    DATA_TYPE yii = yi[i];
+    DATA_TYPE yij = yi[j];
+    yo[i] = yii + a*yij;
+    yo[j] = yij + a*yii;
+  }
+  yo[k] = a;
 }
 
 static long long int hash_array(int n,  DATA_TYPE *out)
@@ -188,9 +190,23 @@ static long long int hash_array(int n,  DATA_TYPE *out)
     return hash;
 }
 
+void checkWarpSize() {
+  int devCount;
+  cudaGetDeviceCount(&devCount);
+  for (int i = 0; i < devCount; i++) {
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, i);
+     if (prop.warpSize != WARP_SIZE) {
+      fprintf(stderr, "WARP_SIZE is incorrect, this program is compiled for warpSize: %i but %s actually has warpSize=%i\n", WARP_SIZE, prop.name, prop.warpSize);
+      exit(2);
+    }
+  }
+}
+
 
 int main(int argc, char **argv)
 {
+  checkWarpSize();
   /* Retrieve problem size. */
   int n = N;
 
@@ -208,16 +224,14 @@ int main(int argc, char **argv)
   // code to benchmark
 
   auto end = std::chrono::high_resolution_clock::now();
-  std::cout << std::chrono::duration_cast<std::chrono::milliseconds>(end-begin).count() << "s" << std::endl;
+  std::cout << std::chrono::duration_cast<std::chrono::milliseconds>(end-begin).count() << "ms" << std::endl;
 
   /* Stop and print timer. */
 
   int dimBlock = BLOCK_SIZE;
-  int dimGrid = (n + 1 + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-  DATA_TYPE *r, *out, *ycurr, *ynext, *part_sum;
+  DATA_TYPE *r, *ycurr, *ynext, *part_sum;
   gpuErrchk(cudaMalloc((void **)&r, N * sizeof(DATA_TYPE)));
-  gpuErrchk(cudaMalloc((void **)&out, N * sizeof(DATA_TYPE)));
   gpuErrchk(cudaMalloc((void **)&ycurr, N * sizeof(DATA_TYPE)));
   gpuErrchk(cudaMalloc((void **)&ynext, N * sizeof(DATA_TYPE)));
   gpuErrchk(cudaMalloc((void **)&part_sum, SUM_BLOCK_COUNT * sizeof(DATA_TYPE)));
@@ -225,7 +239,7 @@ int main(int argc, char **argv)
 
   auto begin2 = std::chrono::high_resolution_clock::now();
 
-  init_array<<<dimGrid, dimBlock>>>(n, r);
+  gpuErrchk(cudaMemcpy(r, h_r, n * sizeof(DATA_TYPE), cudaMemcpyHostToDevice));
 
   DATA_TYPE beta = 1;
   DATA_TYPE alpha = 0;
@@ -238,8 +252,10 @@ int main(int argc, char **argv)
   {
     durbin_k1<<<SUM_BLOCK_COUNT, dimBlock>>>(k, r, ycurr, part_sum);
     gpuErrchk(cudaPeekAtLastError());
-    int dimGrid2 = (k + 1 + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    durbin_k2<<<dimGrid2, dimBlock>>>(k, part_sum, r, ycurr, ynext);
+    // We need to compute ceil((ceil((k - 1) / 2) + 1) / BLOCK_SIZE)
+    int tmp1 = (k + 2 - 1) / 2;
+    int dimGrid = (tmp1 + 1 + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    durbin_k2<<<dimGrid, dimBlock>>>(k, part_sum, r, ycurr, ynext);
     gpuErrchk(cudaPeekAtLastError());
     std::swap(ycurr, ynext);
   }
@@ -247,10 +263,9 @@ int main(int argc, char **argv)
   gpuErrchk(cudaMemcpy(h_out2, ycurr, sizeof(DATA_TYPE) * n, cudaMemcpyDeviceToHost));
 
   auto end2 = std::chrono::high_resolution_clock::now();
-  std::cout << std::chrono::duration_cast<std::chrono::milliseconds>(end2-begin2).count() << "s" << std::endl;
+  std::cout << std::chrono::duration_cast<std::chrono::milliseconds>(end2-begin2).count() << "ms" << std::endl;
 
   gpuErrchk(cudaFree(r));
-  gpuErrchk(cudaFree(out));
   gpuErrchk(cudaFree(ycurr));
   gpuErrchk(cudaFree(ynext));
   gpuErrchk(cudaFree(part_sum));
