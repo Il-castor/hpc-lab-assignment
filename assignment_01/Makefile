@@ -18,6 +18,8 @@ LDFLAGS:=-lm -lcudart $(EXT_LDFLAGS)
 NVCFLAGS:=$(CXXFLAGS) $(NVOPT)
 NVLDFLAGS:=$(LDFLAGS) -lgomp
 
+GCC_CXXFLAGS:=$(CXXFLAGS) -fopenmp
+
 SRCS:= polybench/polybench.c
 OBJS := $(SRCS:%=$(BUILD_DIR)/%.o) $(FILE:%=$(BUILD_DIR)/%.o)
 EXE=$(basename $(FILE))
@@ -32,11 +34,11 @@ $(BUILD_DIR)/%.cu.o: %.cu
 
 $(BUILD_DIR)/%.cpp.o: %.cpp
 	$(MKDIR_P) $(dir $@)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(GCC_CXXFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/%.c.o: %.c
 	$(MKDIR_P) $(dir $@)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(GCC_CXXFLAGS) -c $< -o $@
 
 all: $(EXE)
 
