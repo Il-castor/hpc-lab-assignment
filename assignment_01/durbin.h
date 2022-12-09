@@ -2,7 +2,7 @@
 # define DURBIN_H
 
 /* Default to STANDARD_DATASET. */
-# if !defined(MINI_DATASET) && !defined(SMALL_DATASET) && !defined(LARGE_DATASET) && !defined(EXTRALARGE_DATASET)
+# if !defined(MINI_DATASET) && !defined(SMALL_DATASET) && !defined(LARGE_DATASET) && !defined(EXTRALARGE_DATASET) && !defined(GIGA_DATASET)
 #  define STANDARD_DATASET
 # endif
 
@@ -25,6 +25,10 @@
 #   define N 8000
 #  endif
 
+#  ifdef GIGA_DATASET
+#   define N 200000
+#  endif
+
 #  ifdef EXTRALARGE_DATASET
 #   define N 100000
 #  endif
@@ -39,3 +43,4 @@
 
 
 #endif /* !DURBIN */
+
