@@ -10,7 +10,7 @@
 Entrare nella cartella `assignment_01` e digitare il seguente comando per compilare le varie versioni di durbin sulla CPU: 
 
 ```console
-make FILE=nome_file.c EXT_CFLAGS="-DPOLYBENCH_TIME -DLARGE_DATASET -DPRINT_HASH" clean run
+make FILE=nome_file.c EXT_CXXFLAGS="-DPOLYBENCH_TIME -DLARGE_DATASET -DPRINT_HASH" clean run
 ```
 Per compilare durbin sulla GPU digitare i seguenti comandi:
 
