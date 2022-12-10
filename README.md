@@ -7,7 +7,7 @@
 
 
 ## Eseguire il codice 
-Entrare nella cartella `assignment_01` e digitare il seguente comando per compilare le varie versioni di durbin sulla CPU: 
+Entrare nella cartella `assignment` e digitare il seguente comando per compilare le varie versioni di durbin sulla CPU: 
 
 ```console
 make FILE=nome_file.c EXT_CXXFLAGS="-DPOLYBENCH_TIME -DLARGE_DATASET -DPRINT_HASH" clean run
@@ -26,7 +26,7 @@ make FILE=durbin_cuda.cu EXT_CXXFLAGS="-DLARGE_DATASET" clean run
 ```
 
 ## Assignment opzionale
-Il codice opzionale si può trovare nella cartella `optional_01`, per eseguire il codice si può digitare il comando:
+Il codice opzionale si può trovare nella cartella `optional`, per eseguire il codice si può digitare il comando:
 
 ```console
 make FILE=nome_file.c clean run
