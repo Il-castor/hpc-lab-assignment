@@ -1,4 +1,4 @@
-# hpc-lab-assignment-1
+# hpc-lab-assignment
 
 ## Autori
 * Balma Giovanni (320677)
@@ -12,12 +12,17 @@ Entrare nella cartella `assignment_01` e digitare il seguente comando per compil
 ```console
 make FILE=nome_file.c EXT_CXXFLAGS="-DPOLYBENCH_TIME -DLARGE_DATASET -DPRINT_HASH" clean run
 ```
-Per compilare durbin sulla GPU digitare i seguenti comandi:
+Per compilare durbin sulla GPU con OpenMP digitare i seguenti comandi:
 
-```bash
+```console
 module load clang/11.0.0 cuda/10.0
 ./compile_gpu.sh
 ./durbin_gpu.out
+```
+Per compilare durbin sulla GPU con CUDA digitare i seguenti comandi: 
+
+```console
+make FILE=durbin_cuda.cu EXT_CXXFLAGS="-DLARGE_DATASET" clean run
 ```
 
 ## Assignment opzionale
